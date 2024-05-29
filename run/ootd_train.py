@@ -1,16 +1,8 @@
-import os
-
-import json
-from os import path as osp
-
-import numpy as np
-from PIL import Image, ImageDraw
 import torch
-from torch.utils import data
-from torchvision import transforms
 import argparse
-from utils.dataloader import VITONDataset,VITONDataLoader,make_train_dataset
+from utils.dataloader import VITONDataset, VITONDataLoader
 from safetensors.torch import save_file
+
 
 def get_opt():
     parser = argparse.ArgumentParser()
@@ -28,8 +20,6 @@ def get_opt():
     parser.add_argument('--checkpoint_dir', type=str, default='./checkpoints/')
     parser.add_argument('--save_dir', type=str, default='./results/')
 
-
-    # common
     parser.add_argument('--semantic_nc', type=int, default=13, help='# of human-parsing map classes')
     parser.add_argument('--init_type', choices=['normal', 'xavier', 'xavier_uniform', 'kaiming', 'orthogonal', 'none'], default='xavier')
     parser.add_argument('--init_variance', type=float, default=0.02, help='variance of the initialization distribution')
@@ -169,8 +159,8 @@ from accelerate.utils import ProjectConfiguration, set_seed
 import torch.nn.functional as F
 sys.path.append(r'/mmu-vcg-ssd/yichen/OOTDiffusion/ootd')
 
-from pipelines_ootd.unet_vton_2d_condition import UNetVton2DConditionModel
-from pipelines_ootd.unet_garm_2d_condition import UNetGarm2DConditionModel
+from ootd.pipelines_ootd.unet_vton_2d_condition import UNetVton2DConditionModel
+from ootd.pipelines_ootd.unet_garm_2d_condition import UNetGarm2DConditionModel
 
 VIT_PATH = "/mmu-vcg-ssd/yichen/OOTDiffusion/checkpoints/clip-vit-large-patch14"
 VAE_PATH = "/mmu-vcg-ssd/yichen/OOTDiffusion/checkpoints/ootd"
@@ -219,8 +209,6 @@ if unet_vton.conv_in.in_channels == 4:
         unet_vton.conv_in = conv_new  # replace conv layer in unet
         print('#######Replace the first conv layer of the unet with a new one with the correct number of input channels#######')
         # unet_garm.config['in_channels'] = new_in_channels  # update config
-#################
-
 
 noise_scheduler = PNDMScheduler.from_config(scheduler_path)
         
@@ -237,7 +225,6 @@ text_encoder = CLIPTextModel.from_pretrained(
         )
 vae_scale_factor = 2 ** (len(vae.config.block_out_channels) - 1)
 image_processor = VaeImageProcessor(vae_scale_factor=vae_scale_factor)
-# register_to_config(requires_safety_checker=requires_safety_checker)
 
 vae.requires_grad_(False)
 unet_garm.requires_grad_(True)
@@ -247,7 +234,8 @@ text_encoder.requires_grad_(False)
 
 unet_garm.train()
 unet_vton.train()
- # Optimizer creation
+
+# Optimizer creation
 import math
 from pathlib import Path
 args = opt
@@ -264,7 +252,7 @@ accelerator = Accelerator(
     )
 
 optimizer_class = torch.optim.AdamW
-######单机单卡
+
 params_to_optimize = list(unet_garm.parameters()) + list(unet_vton.parameters())
 optimizer = optimizer_class(
         params_to_optimize,
@@ -273,16 +261,6 @@ optimizer = optimizer_class(
         weight_decay=args.adam_weight_decay,
         eps=args.adam_epsilon,
     )
-#######单机多卡
-# params_to_optimize = list(unet_garm.parameters())
-# optimizer = optimizer_class(
-#         params_to_optimize,
-#         lr=args.learning_rate,
-#         betas=(args.adam_beta1, args.adam_beta2),
-#         weight_decay=args.adam_weight_decay,
-#         eps=args.adam_epsilon,
-#     )
-# optimizer.add_param_group({'params': list(unet_vton.parameters())})
 
 # Scheduler and math around the number of training steps.
 overrode_max_train_steps = False
@@ -300,35 +278,20 @@ lr_scheduler = get_scheduler(
         power=args.lr_power,
     )
 
-# if accelerator.state.deepspeed_plugin is not None:
-#   kwargs = {
-              
-#               "train_micro_batch_size_per_gpu": 1,
-#               "train_batch_size": 1,
-              
-#           } 
-#     accelerator.state.deepspeed_plugin.deepspeed_config_process(must_match=True, **kwargs)c
 
-
-#Prepare everything with our `accelerator`.
+# Prepare everything with our `accelerator`.
 class Unet_(torch.nn.Module):
     def __init__(self, vton_model, garm_model):
         super(Unet_, self).__init__()
         self.unet_vton = vton_model
         self.unet_garm = garm_model
-        # 其他初始化代码...
+
 
 unet_ = Unet_(unet_vton, unet_garm)
 
-unet_ ,optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
+unet_, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
         unet_, optimizer, train_dataloader, lr_scheduler
     )
-
-
-
-# unet_garm,unet_vton,optimizer, train_dataloader,test_loader, lr_scheduler = accelerator.prepare(
-#          unet_garm,unet_vton,optimizer, train_dataloader, test_loader,lr_scheduler
-#     )
 
 weight_dtype = torch.float32
 if accelerator.mixed_precision == "fp16":
@@ -343,13 +306,6 @@ unet_vton.to(accelerator.device)
 image_encoder.to(accelerator.device, dtype=weight_dtype)
 text_encoder.to(accelerator.device, dtype=weight_dtype)
 
-
-# unet_garm.to(dtype=weight_dtype)
-# unet_vton.to(dtype=weight_dtype)
-
-
-
-
 # We need to recalculate our total training steps as the size of the training dataloader may have changed.
 num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
 if overrode_max_train_steps:
@@ -357,11 +313,13 @@ if overrode_max_train_steps:
 # Afterwards we recalculate our number of training epochs
 args.num_train_epochs = math.ceil(args.max_train_steps / num_update_steps_per_epoch)
 
-def tokenize_captions( captions, max_length):
-        inputs = tokenizer(
-            captions, max_length=max_length, padding="max_length", truncation=True, return_tensors="pt"
-        )
-        return inputs.input_ids
+
+def tokenize_captions(captions, max_length):
+    inputs = tokenizer(
+        captions, max_length=max_length, padding="max_length", truncation=True, return_tensors="pt"
+    )
+    return inputs.input_ids
+
 
 batchsize = args.train_batch_size
 
@@ -384,27 +342,16 @@ first_epoch = 0
 
 initial_global_step = 0
 
-# progress_bar = tqdm(
-#         range(0, args.max_train_steps),
-#         initial=initial_global_step,
-#         desc="Steps",
-#         # Only show the progress bar once on each machine.
-#         disable=not accelerator.is_local_main_process,
-#     )
-
 image_logs = None
 for epoch in tqdm(range(first_epoch, args.num_train_epochs)):
     for step, batch in enumerate(train_dataloader):
-        with accelerator.accumulate(unet_vton),accelerator.accumulate(unet_garm):
-        # with accelerator.accumulate(unet_vton):
-
-
+        with accelerator.accumulate(unet_vton), accelerator.accumulate(unet_garm):
 
             image_garm = batch['cloth']['paired'].to(accelerator.device).to(dtype=weight_dtype)
             image_vton = batch['img_agnostic'].to(accelerator.device).to(dtype=weight_dtype)
             image_ori = batch['img'].to(accelerator.device).to(dtype=weight_dtype)
             
-            #get prompt embeds
+            # get prompt embeds
             prompt_image = auto_processor(images=image_garm, return_tensors="pt").to(accelerator.device)
             prompt_image = image_encoder(prompt_image.data['pixel_values']).image_embeds
             prompt_image = prompt_image.unsqueeze(1)
@@ -417,8 +364,6 @@ for epoch in tqdm(range(first_epoch, args.num_train_epochs)):
                 prompt_embeds = torch.cat([prompt_embeds, prompt_image], dim=1)
             else:
                 raise ValueError("model_type must be \'hd\' or \'dc\'!")
-                
-            ######preprocess把[0,1]转为【-1，1】
 
             image_garm = image_processor.preprocess(image_garm)
             image_vton = image_processor.preprocess(image_vton)
@@ -450,56 +395,13 @@ for epoch in tqdm(range(first_epoch, args.num_train_epochs)):
             prompt_embeds = prompt_embeds.repeat(1, num_images_per_prompt, 1)
             prompt_embeds = prompt_embeds.view(bs_embed * num_images_per_prompt, seq_len, -1)
 
-            # 3. Preprocess image
-            # image_garm = batch['cloth']
-            # image_vton = batch['agnostic']
-            # image_ori = batch['img']
-            # image_garm = image_processor.preprocess(image_garm)
-            # image_vton = image_processor.preprocess(image_vton)
-            # image_ori = image_processor.preprocess(image_ori)
-            # mask = np.array(mask)
-            # mask[mask < 127] = 0
-            # mask[mask >= 127] = 255
-            # mask = torch.tensor(mask)
-            # mask = mask / 255
-            # mask = mask.reshape(-1, 1, mask.size(-2), mask.size(-1))
-
-            # 4. set timesteps ,在生成noisy_latents之前设置过了
-            
-            # 5. Prepare Image latents
-            # garm_latents = self.prepare_garm_latents(
-            #     image_garm,
-            #     batch_size,
-            #     num_images_per_prompt,
-            #     prompt_embeds.dtype,
-            #     device,
-            #     self.do_classifier_free_guidance,
-            #     generator,
-            # )
             image_latents_garm = vae.encode(image_garm).latent_dist.mode()
             image_latents_garm = torch.cat([image_latents_garm], dim=0)
-            
-            # vton_latents, mask_latents, image_ori_latents = self.prepare_vton_latents(
-            #     image_vton,
-            #     mask,
-            #     image_ori,
-            #     batch_size,
-            #     num_images_per_prompt,
-            #     prompt_embeds.dtype,
-            #     device,
-            #     self.do_classifier_free_guidance,
-            #     generator,
-            # )
+
             image_latents_vton = vae.encode(image_vton).latent_dist.mode()
-            # image_ori_latents = vae.encode(image_ori).latent_dist.mode()
             
             image_latents_vton = torch.cat([image_latents_vton], dim=0)
-            # image_ori_latents = torch.cat([image_ori_latents], dim=0)
 
-            # height, width = image_latents_vton.shape[-2:]
-            # height = height * vae_scale_factor
-            # width = width * vae_scale_factor
-            #####  modify: we should dropout the cloth condition! ##########      
             if args.conditioning_dropout_prob is not None:
                 random_p = torch.rand(bsz, device=latents.device)
                 #########################################################
@@ -521,10 +423,6 @@ for epoch in tqdm(range(first_epoch, args.num_train_epochs)):
             encoder_hidden_states=prompt_embeds,
             return_dict=False,)
 
-
-            # unet_garm(image_latents_garm,0,encoder_hidden_states=prompt_embeds,return_dict=False,)
-            # import pdb;pdb.set_trace()
-
             latent_vton_model_input = torch.cat([noisy_latents, image_latents_vton], dim=1)
 
             spatial_attn_inputs = spatial_attn_outputs.copy()
@@ -536,7 +434,6 @@ for epoch in tqdm(range(first_epoch, args.num_train_epochs)):
                     encoder_hidden_states=prompt_embeds,
                     return_dict=False,
                 )[0]
-
 
             # with accelerator.autocast():
             util_adv_loss = torch.nn.functional.softplus(-sample).mean() * 0 
@@ -551,7 +448,7 @@ for epoch in tqdm(range(first_epoch, args.num_train_epochs)):
             
             # progress_bar.update(7)#####单机多卡，每次增加卡的数量
             accelerator.log({"training_loss": loss}, step=step)
-    if (epoch%100 == 0 and epoch != 0 ) or epoch == (args.num_train_epochs-1):
+    if (epoch % 100 == 0 and epoch != 0) or epoch == (args.num_train_epochs-1):
         state_dict_unet_vton = unet_vton.state_dict()
         for key in state_dict_unet_vton.keys():
             state_dict_unet_vton[key] = state_dict_unet_vton[key].to('cpu')
@@ -564,6 +461,3 @@ for epoch in tqdm(range(first_epoch, args.num_train_epochs)):
         # save_file(state_dict_unet_garm,f"./ootd_train_checkpoints/unet_garm.safetensors")                
         print('checkpoints successful saved')
 accelerator.end_training()
-# from safetensors.torch import save_file
-# save_file(unet_vton.to('cpu').state_dict(), "./unet_vton.safetensors")
-# save_file(unet_garm.to('cpu').state_dict(),"./unet_garm.safetensors")

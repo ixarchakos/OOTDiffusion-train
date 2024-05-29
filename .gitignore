@@ -1,3 +1,4 @@
 /images
 *.txt
 .DS_Store
+.idea/
